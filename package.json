@@ -1,0 +1,26 @@
+{
+  "name": "@qmoosa/derivatives-sdk",
+  "version": "1.0.0",
+  "description": "Perpetual Futures & Synthetic Derivatives — Type-Safe Client, Payload Builders & Chain Adapters",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test tests/sdk.test.mjs",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  },
+  "keywords": [
+    "qmoosa",
+    "derivatives",
+    "sdk",
+    "perpetual",
+    "client",
+    "leverage"
+  ],
+  "author": "elon00",
+  "license": "MIT"
+}
