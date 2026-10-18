@@ -5,7 +5,9 @@ import {
   ClientConfig,
   ChainAdapter,
   IntentDomain,
-  SignedIntent
+  SignedIntent,
+  SignedPrivilegedIntent,
+  EnrollmentProof
 } from "./types.js";
 
 export class QmoosaDerivativesClient {
@@ -31,6 +33,45 @@ export class QmoosaDerivativesClient {
     };
   }
 
+  public static generateKeyPair(): { publicKey: string; privateKey: string } {
+    return crypto.generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" }
+    });
+  }
+
+  public static computeEnrollmentChallenge(account: string, timestamp: number): string {
+    return `QMOOSA:ENROLL:${account.toLowerCase()}:${timestamp}`;
+  }
+
+  public static signMessage(message: string, privateKey: string): string {
+    return crypto.sign(null, Buffer.from(message), privateKey).toString("hex");
+  }
+
+  public static verifySignature(message: string, publicKey: string, signatureHex: string): boolean {
+    try {
+      return crypto.verify(null, Buffer.from(message), publicKey, Buffer.from(signatureHex, "hex"));
+    } catch {
+      return false;
+    }
+  }
+
+  public createEnrollmentProof(
+    account: string,
+    publicKey: string,
+    privateKey: string,
+    timestamp: number = Date.now()
+  ): EnrollmentProof {
+    const challenge = QmoosaDerivativesClient.computeEnrollmentChallenge(account, timestamp);
+    const enrollmentSignature = QmoosaDerivativesClient.signMessage(challenge, privateKey);
+    return {
+      account: account.toLowerCase(),
+      publicKey,
+      enrollmentSignature,
+      timestamp
+    };
+  }
+
   public static canonicalize(obj: unknown): unknown {
     if (obj === null || typeof obj !== "object") {
       return typeof obj === "bigint" ? obj.toString() : obj;
@@ -51,18 +92,27 @@ export class QmoosaDerivativesClient {
     return crypto.createHash("sha256").update(canonical).digest("hex");
   }
 
-  public static computeSignature(
+  public static computeIntentPayload(
     domain: IntentDomain,
     account: string,
     caller: string,
     action: string,
     nonce: bigint,
     deadline: number,
-    paramsHash: string,
-    secretKey: string
+    paramsHash: string
   ): string {
-    const payload = `${domain.chainId}:${domain.contractAddress.toLowerCase()}:${account.toLowerCase()}:${caller.toLowerCase()}:${action}:${nonce}:${deadline}:${paramsHash}`;
-    return crypto.createHmac("sha256", secretKey).update(payload).digest("hex");
+    return `${domain.chainId}:${domain.contractAddress.toLowerCase()}:${account.toLowerCase()}:${caller.toLowerCase()}:${action}:${nonce}:${deadline}:${paramsHash}`;
+  }
+
+  public static computePrivilegedPayload(
+    domain: IntentDomain,
+    role: string,
+    action: string,
+    nonce: bigint,
+    deadline: number,
+    paramsHash: string
+  ): string {
+    return `${domain.chainId}:${domain.contractAddress.toLowerCase()}:${role.toUpperCase()}:${action}:${nonce}:${deadline}:${paramsHash}`;
   }
 
   public signIntent(params: {
@@ -72,7 +122,7 @@ export class QmoosaDerivativesClient {
     action: string;
     canonicalParams: unknown;
     nonce: bigint;
-    secretKey: string;
+    privateKey: string;
     deadlineMs?: number;
   }): SignedIntent {
     const domain = params.domain ?? this.defaultDomain;
@@ -80,16 +130,17 @@ export class QmoosaDerivativesClient {
     const account = params.account.toLowerCase();
     const deadlineMs = params.deadlineMs ?? Date.now() + 300_000;
     const paramsHash = QmoosaDerivativesClient.hashParams(params.canonicalParams);
-    const signature = QmoosaDerivativesClient.computeSignature(
+    const payload = QmoosaDerivativesClient.computeIntentPayload(
       domain,
       account,
       caller,
       params.action,
       params.nonce,
       deadlineMs,
-      paramsHash,
-      params.secretKey
+      paramsHash
     );
+
+    const signature = QmoosaDerivativesClient.signMessage(payload, params.privateKey);
 
     return {
       domain: {
@@ -98,6 +149,43 @@ export class QmoosaDerivativesClient {
       },
       account,
       caller,
+      action: params.action,
+      nonce: params.nonce,
+      deadline: deadlineMs,
+      paramsHash,
+      signature
+    };
+  }
+
+  public signPrivilegedIntent(params: {
+    domain?: IntentDomain;
+    role: "ADMIN" | "ORACLE" | "KEEPER";
+    action: string;
+    canonicalParams: unknown;
+    nonce: bigint;
+    privateKey: string;
+    deadlineMs?: number;
+  }): SignedPrivilegedIntent {
+    const domain = params.domain ?? this.defaultDomain;
+    const deadlineMs = params.deadlineMs ?? Date.now() + 300_000;
+    const paramsHash = QmoosaDerivativesClient.hashParams(params.canonicalParams);
+    const payload = QmoosaDerivativesClient.computePrivilegedPayload(
+      domain,
+      params.role,
+      params.action,
+      params.nonce,
+      deadlineMs,
+      paramsHash
+    );
+
+    const signature = QmoosaDerivativesClient.signMessage(payload, params.privateKey);
+
+    return {
+      domain: {
+        chainId: domain.chainId,
+        contractAddress: domain.contractAddress.toLowerCase()
+      },
+      role: params.role,
       action: params.action,
       nonce: params.nonce,
       deadline: deadlineMs,
@@ -115,7 +203,7 @@ export class QmoosaDerivativesClient {
     collateral: bigint;
     leverage: bigint;
     nonce?: bigint;
-    secretKey?: string;
+    privateKey?: string;
     contractAddress?: string;
     chainId?: number;
     deadlineMs?: number;
@@ -151,7 +239,7 @@ export class QmoosaDerivativesClient {
     };
 
     let signedIntent = params.signedIntent;
-    if (!signedIntent && params.secretKey && params.nonce !== undefined) {
+    if (!signedIntent && params.privateKey && params.nonce !== undefined) {
       signedIntent = this.signIntent({
         domain,
         account: params.account,
@@ -159,7 +247,7 @@ export class QmoosaDerivativesClient {
         action: "OPEN_POSITION",
         canonicalParams,
         nonce: params.nonce,
-        secretKey: params.secretKey,
+        privateKey: params.privateKey,
         deadlineMs: params.deadlineMs
       });
     }
@@ -182,7 +270,7 @@ export class QmoosaDerivativesClient {
     caller?: string;
     positionId: string;
     nonce?: bigint;
-    secretKey?: string;
+    privateKey?: string;
     contractAddress?: string;
     chainId?: number;
     deadlineMs?: number;
@@ -205,7 +293,7 @@ export class QmoosaDerivativesClient {
     };
 
     let signedIntent = params.signedIntent;
-    if (!signedIntent && params.secretKey && params.nonce !== undefined) {
+    if (!signedIntent && params.privateKey && params.nonce !== undefined) {
       signedIntent = this.signIntent({
         domain,
         account: params.account,
@@ -213,7 +301,7 @@ export class QmoosaDerivativesClient {
         action: "CLOSE_POSITION",
         canonicalParams,
         nonce: params.nonce,
-        secretKey: params.secretKey,
+        privateKey: params.privateKey,
         deadlineMs: params.deadlineMs
       });
     }
@@ -232,7 +320,7 @@ export class QmoosaDerivativesClient {
     operator: string;
     approved: boolean;
     nonce?: bigint;
-    secretKey?: string;
+    privateKey?: string;
     contractAddress?: string;
     chainId?: number;
     deadlineMs?: number;
@@ -255,7 +343,7 @@ export class QmoosaDerivativesClient {
     };
 
     let signedIntent = params.signedIntent;
-    if (!signedIntent && params.secretKey && params.nonce !== undefined) {
+    if (!signedIntent && params.privateKey && params.nonce !== undefined) {
       signedIntent = this.signIntent({
         domain,
         account: params.account,
@@ -263,7 +351,7 @@ export class QmoosaDerivativesClient {
         action: "SET_OPERATOR",
         canonicalParams,
         nonce: params.nonce,
-        secretKey: params.secretKey,
+        privateKey: params.privateKey,
         deadlineMs: params.deadlineMs
       });
     }

@@ -3,7 +3,9 @@ export type DerivativesAction =
   | "CLOSE_POSITION"
   | "LIQUIDATE"
   | "UPDATE_PRICES"
-  | "SET_OPERATOR";
+  | "SET_OPERATOR"
+  | "REGISTER_MARKET"
+  | "SETTLE_FUNDING";
 
 export interface IntentDomain {
   chainId: number;
@@ -19,6 +21,23 @@ export interface SignedIntent {
   deadline: number;
   paramsHash: string;
   signature: string;
+}
+
+export interface SignedPrivilegedIntent {
+  domain: IntentDomain;
+  role: "ADMIN" | "ORACLE" | "KEEPER";
+  action: string;
+  nonce: bigint;
+  deadline: number;
+  paramsHash: string;
+  signature: string;
+}
+
+export interface EnrollmentProof {
+  account: string;
+  publicKey: string;
+  enrollmentSignature: string;
+  timestamp: number;
 }
 
 export interface DerivativesTransactionRequest {
@@ -37,6 +56,8 @@ export interface DerivativesTransactionRequest {
   operator?: string;
   approved?: boolean;
   signedIntent?: SignedIntent;
+  signedPrivilegedIntent?: SignedPrivilegedIntent;
+  enrollmentProof?: EnrollmentProof;
 }
 
 export interface ChainAdapter {

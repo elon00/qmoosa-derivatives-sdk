@@ -4,9 +4,9 @@ import { QmoosaDerivativesClient } from "../dist/index.js";
 
 const WAD = 10n ** 18n;
 
-test("1. Build open position payload with default parameters and signed intent", () => {
+test("1. Build open position payload with default parameters and asymmetric signed intent", () => {
   const client = new QmoosaDerivativesClient();
-  const secretKey = "alice-sdk-secret-key";
+  const keys = QmoosaDerivativesClient.generateKeyPair();
 
   const payload = client.buildOpenPositionPayload({
     account: "0xUser1",
@@ -16,7 +16,7 @@ test("1. Build open position payload with default parameters and signed intent",
     collateral: 600n * WAD,
     leverage: 10n,
     nonce: 1n,
-    secretKey
+    privateKey: keys.privateKey
   });
 
   assert.equal(payload.action, "OPEN_POSITION");
@@ -34,15 +34,15 @@ test("1. Build open position payload with default parameters and signed intent",
   assert.equal(payload.signedIntent.domain.chainId, QmoosaDerivativesClient.DEFAULT_CHAIN_ID);
 });
 
-test("2. Build close position payload with signed intent", () => {
+test("2. Build close position payload with asymmetric signed intent", () => {
   const client = new QmoosaDerivativesClient();
-  const secretKey = "alice-sdk-secret-key";
+  const keys = QmoosaDerivativesClient.generateKeyPair();
 
   const payload = client.buildClosePositionPayload({
     account: "0xUser1",
     positionId: "POS-ETH-USD-1",
     nonce: 2n,
-    secretKey
+    privateKey: keys.privateKey
   });
 
   assert.equal(payload.action, "CLOSE_POSITION");
@@ -53,16 +53,16 @@ test("2. Build close position payload with signed intent", () => {
   assert.equal(payload.signedIntent.nonce, 2n);
 });
 
-test("3. Build set operator payload with signed intent", () => {
+test("3. Build set operator payload with asymmetric signed intent", () => {
   const client = new QmoosaDerivativesClient();
-  const secretKey = "alice-sdk-secret-key";
+  const keys = QmoosaDerivativesClient.generateKeyPair();
 
   const payload = client.buildSetOperatorPayload({
     account: "0xUser1",
     operator: "0xBrokerBot",
     approved: true,
     nonce: 1n,
-    secretKey
+    privateKey: keys.privateKey
   });
 
   assert.equal(payload.action, "SET_OPERATOR");
@@ -73,7 +73,20 @@ test("3. Build set operator payload with signed intent", () => {
   assert.equal(payload.signedIntent.action, "SET_OPERATOR");
 });
 
-test("4. Build liquidate payload", () => {
+test("4. Create and verify account enrollment proof", () => {
+  const client = new QmoosaDerivativesClient();
+  const keys = QmoosaDerivativesClient.generateKeyPair();
+
+  const proof = client.createEnrollmentProof("0xUser1", keys.publicKey, keys.privateKey);
+  assert.equal(proof.account, "0xuser1");
+  assert.equal(proof.publicKey, keys.publicKey);
+
+  const challenge = QmoosaDerivativesClient.computeEnrollmentChallenge("0xUser1", proof.timestamp);
+  const isValid = QmoosaDerivativesClient.verifySignature(challenge, keys.publicKey, proof.enrollmentSignature);
+  assert.equal(isValid, true);
+});
+
+test("5. Build liquidate payload", () => {
   const client = new QmoosaDerivativesClient();
   const payload = client.buildLiquidatePayload({
     liquidator: "0xLiquidator1",
@@ -85,7 +98,7 @@ test("4. Build liquidate payload", () => {
   assert.equal(payload.positionId, "POS-ETH-USD-1");
 });
 
-test("5. Fail-closed input validations (leverage, size, addresses)", () => {
+test("6. Fail-closed input validations (leverage, size, addresses)", () => {
   const client = new QmoosaDerivativesClient();
 
   // Excessive leverage > 20x
@@ -125,7 +138,7 @@ test("5. Fail-closed input validations (leverage, size, addresses)", () => {
   }, /Position size must be strictly positive/);
 });
 
-test("6. Chain adapter dispatch and fail-closed error without adapter", async () => {
+test("7. Chain adapter dispatch and fail-closed error without adapter", async () => {
   const clientWithoutAdapter = new QmoosaDerivativesClient();
   const payload = clientWithoutAdapter.buildClosePositionPayload({
     account: "0xUser1",
@@ -137,7 +150,6 @@ test("6. Chain adapter dispatch and fail-closed error without adapter", async ()
     /No chain adapter configured/
   );
 
-  // Client with mock adapter
   let capturedTx = null;
   const mockAdapter = {
     async sendTransaction(req) {
