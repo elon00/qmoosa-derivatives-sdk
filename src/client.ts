@@ -40,8 +40,42 @@ export class QmoosaDerivativesClient {
     });
   }
 
+  public static generateAccountKeyPair(): { publicKey: string; privateKey: string; address: string } {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ec", {
+      namedCurve: "secp256k1",
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" }
+    });
+    const address = QmoosaDerivativesClient.deriveAddressFromPublicKey(publicKey);
+    return { publicKey, privateKey, address };
+  }
+
+  public static deriveAddressFromPublicKey(publicKeyPem: string): string {
+    const pub = crypto.createPublicKey(publicKeyPem);
+    const der = pub.export({ type: "spki", format: "der" });
+    const rawPoint = der.slice(-64);
+    return "0x" + crypto.createHash("sha256").update(rawPoint).digest("hex").slice(-40).toLowerCase();
+  }
+
+  public static computeBindingChallenge(account: string, ed25519PublicKey: string, timestamp: number): string {
+    const fingerprint = crypto.createHash("sha256").update(ed25519PublicKey).digest("hex");
+    return `QMOOSA:BIND:${account.toLowerCase()}:${fingerprint}:${timestamp}`;
+  }
+
   public static computeEnrollmentChallenge(account: string, timestamp: number): string {
     return `QMOOSA:ENROLL:${account.toLowerCase()}:${timestamp}`;
+  }
+
+  public static signAccountMessage(message: string, privateKeyPem: string): string {
+    return crypto.sign("SHA256", Buffer.from(message), privateKeyPem).toString("hex");
+  }
+
+  public static verifyAccountSignature(message: string, publicKeyPem: string, signatureHex: string): boolean {
+    try {
+      return crypto.verify("SHA256", Buffer.from(message), publicKeyPem, Buffer.from(signatureHex, "hex"));
+    } catch {
+      return false;
+    }
   }
 
   public static signMessage(message: string, privateKey: string): string {
@@ -58,14 +92,22 @@ export class QmoosaDerivativesClient {
 
   public createEnrollmentProof(
     account: string,
+    accountPublicKey: string,
+    accountPrivateKey: string,
     publicKey: string,
     privateKey: string,
     timestamp: number = Date.now()
   ): EnrollmentProof {
+    const bindChallenge = QmoosaDerivativesClient.computeBindingChallenge(account, publicKey, timestamp);
+    const accountSignature = QmoosaDerivativesClient.signAccountMessage(bindChallenge, accountPrivateKey);
+
     const challenge = QmoosaDerivativesClient.computeEnrollmentChallenge(account, timestamp);
     const enrollmentSignature = QmoosaDerivativesClient.signMessage(challenge, privateKey);
+
     return {
       account: account.toLowerCase(),
+      accountPublicKey,
+      accountSignature,
       publicKey,
       enrollmentSignature,
       timestamp

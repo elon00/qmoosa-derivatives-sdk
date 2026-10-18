@@ -33,8 +33,16 @@ export interface SignedPrivilegedIntent {
   signature: string;
 }
 
+export interface AccountKeyPair {
+  publicKey: string;
+  privateKey: string;
+  address: string;
+}
+
 export interface EnrollmentProof {
   account: string;
+  accountPublicKey: string;
+  accountSignature: string;
   publicKey: string;
   enrollmentSignature: string;
   timestamp: number;

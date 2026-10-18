@@ -75,15 +75,25 @@ test("3. Build set operator payload with asymmetric signed intent", () => {
 
 test("4. Create and verify account enrollment proof", () => {
   const client = new QmoosaDerivativesClient();
-  const keys = QmoosaDerivativesClient.generateKeyPair();
+  const account = QmoosaDerivativesClient.generateAccountKeyPair();
+  const operational = QmoosaDerivativesClient.generateKeyPair();
 
-  const proof = client.createEnrollmentProof("0xUser1", keys.publicKey, keys.privateKey);
-  assert.equal(proof.account, "0xuser1");
-  assert.equal(proof.publicKey, keys.publicKey);
+  const proof = client.createEnrollmentProof(
+    account.address,
+    account.publicKey,
+    account.privateKey,
+    operational.publicKey,
+    operational.privateKey
+  );
+  assert.equal(proof.account, account.address.toLowerCase());
+  assert.equal(proof.publicKey, operational.publicKey);
+  assert.equal(proof.accountPublicKey, account.publicKey);
 
-  const challenge = QmoosaDerivativesClient.computeEnrollmentChallenge("0xUser1", proof.timestamp);
-  const isValid = QmoosaDerivativesClient.verifySignature(challenge, keys.publicKey, proof.enrollmentSignature);
-  assert.equal(isValid, true);
+  const bindChallenge = QmoosaDerivativesClient.computeBindingChallenge(account.address, operational.publicKey, proof.timestamp);
+  assert.equal(QmoosaDerivativesClient.verifyAccountSignature(bindChallenge, account.publicKey, proof.accountSignature), true);
+
+  const enrollChallenge = QmoosaDerivativesClient.computeEnrollmentChallenge(account.address, proof.timestamp);
+  assert.equal(QmoosaDerivativesClient.verifySignature(enrollChallenge, operational.publicKey, proof.enrollmentSignature), true);
 });
 
 test("5. Build liquidate payload", () => {
