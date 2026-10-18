@@ -1,11 +1,15 @@
+import crypto from "node:crypto";
 import {
   DerivativesAction,
   DerivativesTransactionRequest,
   ClientConfig,
-  ChainAdapter
+  ChainAdapter,
+  IntentDomain,
+  SignedIntent
 } from "./types.js";
 
 export class QmoosaDerivativesClient {
+  public static readonly DEFAULT_CHAIN_ID = 31337;
   public static readonly DEFAULT_CONTRACT_ADDRESS = "0x9999999999999999999999999999999999999999";
   public static readonly MAX_LEVERAGE = 20n;
   public static readonly MIN_LEVERAGE = 1n;
@@ -14,19 +18,108 @@ export class QmoosaDerivativesClient {
 
   constructor(config: ClientConfig = {}) {
     this.config = {
-      defaultContractAddress: config.defaultContractAddress ?? QmoosaDerivativesClient.DEFAULT_CONTRACT_ADDRESS,
+      defaultContractAddress: (config.defaultContractAddress ?? QmoosaDerivativesClient.DEFAULT_CONTRACT_ADDRESS).toLowerCase(),
+      defaultChainId: config.defaultChainId ?? QmoosaDerivativesClient.DEFAULT_CHAIN_ID,
       chainAdapter: config.chainAdapter
+    };
+  }
+
+  public get defaultDomain(): IntentDomain {
+    return {
+      chainId: this.config.defaultChainId!,
+      contractAddress: this.config.defaultContractAddress!
+    };
+  }
+
+  public static canonicalize(obj: unknown): unknown {
+    if (obj === null || typeof obj !== "object") {
+      return typeof obj === "bigint" ? obj.toString() : obj;
+    }
+    if (Array.isArray(obj)) {
+      return obj.map(QmoosaDerivativesClient.canonicalize);
+    }
+    const sortedKeys = Object.keys(obj as Record<string, unknown>).sort();
+    const result: Record<string, unknown> = {};
+    for (const key of sortedKeys) {
+      result[key] = QmoosaDerivativesClient.canonicalize((obj as Record<string, unknown>)[key]);
+    }
+    return result;
+  }
+
+  public static hashParams(params: unknown): string {
+    const canonical = JSON.stringify(QmoosaDerivativesClient.canonicalize(params));
+    return crypto.createHash("sha256").update(canonical).digest("hex");
+  }
+
+  public static computeSignature(
+    domain: IntentDomain,
+    account: string,
+    caller: string,
+    action: string,
+    nonce: bigint,
+    deadline: number,
+    paramsHash: string,
+    secretKey: string
+  ): string {
+    const payload = `${domain.chainId}:${domain.contractAddress.toLowerCase()}:${account.toLowerCase()}:${caller.toLowerCase()}:${action}:${nonce}:${deadline}:${paramsHash}`;
+    return crypto.createHmac("sha256", secretKey).update(payload).digest("hex");
+  }
+
+  public signIntent(params: {
+    domain?: IntentDomain;
+    account: string;
+    caller?: string;
+    action: string;
+    canonicalParams: unknown;
+    nonce: bigint;
+    secretKey: string;
+    deadlineMs?: number;
+  }): SignedIntent {
+    const domain = params.domain ?? this.defaultDomain;
+    const caller = (params.caller ?? params.account).toLowerCase();
+    const account = params.account.toLowerCase();
+    const deadlineMs = params.deadlineMs ?? Date.now() + 300_000;
+    const paramsHash = QmoosaDerivativesClient.hashParams(params.canonicalParams);
+    const signature = QmoosaDerivativesClient.computeSignature(
+      domain,
+      account,
+      caller,
+      params.action,
+      params.nonce,
+      deadlineMs,
+      paramsHash,
+      params.secretKey
+    );
+
+    return {
+      domain: {
+        chainId: domain.chainId,
+        contractAddress: domain.contractAddress.toLowerCase()
+      },
+      account,
+      caller,
+      action: params.action,
+      nonce: params.nonce,
+      deadline: deadlineMs,
+      paramsHash,
+      signature
     };
   }
 
   public buildOpenPositionPayload(params: {
     account: string;
+    caller?: string;
     symbol: string;
     isLong: boolean;
     size: bigint;
     collateral: bigint;
     leverage: bigint;
+    nonce?: bigint;
+    secretKey?: string;
     contractAddress?: string;
+    chainId?: number;
+    deadlineMs?: number;
+    signedIntent?: SignedIntent;
   }): DerivativesTransactionRequest {
     if (!params.account || params.account.trim().length === 0) {
       throw new Error("Account address must not be empty");
@@ -44,22 +137,56 @@ export class QmoosaDerivativesClient {
       throw new RangeError(`Leverage must be between 1x and 20x (got ${params.leverage}x)`);
     }
 
-    return {
-      action: "OPEN_POSITION",
-      contractAddress: params.contractAddress ?? this.config.defaultContractAddress!,
-      sender: params.account,
+    const contractAddress = (params.contractAddress ?? this.config.defaultContractAddress!).toLowerCase();
+    const chainId = params.chainId ?? this.config.defaultChainId!;
+    const domain: IntentDomain = { chainId, contractAddress };
+    const caller = (params.caller ?? params.account).toLowerCase();
+    const canonicalParams = {
+      account: params.account.toLowerCase(),
       symbol: params.symbol.toUpperCase(),
       isLong: params.isLong,
       size: params.size,
       collateral: params.collateral,
       leverage: params.leverage
     };
+
+    let signedIntent = params.signedIntent;
+    if (!signedIntent && params.secretKey && params.nonce !== undefined) {
+      signedIntent = this.signIntent({
+        domain,
+        account: params.account,
+        caller,
+        action: "OPEN_POSITION",
+        canonicalParams,
+        nonce: params.nonce,
+        secretKey: params.secretKey,
+        deadlineMs: params.deadlineMs
+      });
+    }
+
+    return {
+      action: "OPEN_POSITION",
+      contractAddress,
+      sender: caller,
+      symbol: params.symbol.toUpperCase(),
+      isLong: params.isLong,
+      size: params.size,
+      collateral: params.collateral,
+      leverage: params.leverage,
+      signedIntent
+    };
   }
 
   public buildClosePositionPayload(params: {
     account: string;
+    caller?: string;
     positionId: string;
+    nonce?: bigint;
+    secretKey?: string;
     contractAddress?: string;
+    chainId?: number;
+    deadlineMs?: number;
+    signedIntent?: SignedIntent;
   }): DerivativesTransactionRequest {
     if (!params.account || params.account.trim().length === 0) {
       throw new Error("Account address must not be empty");
@@ -68,11 +195,86 @@ export class QmoosaDerivativesClient {
       throw new Error("Position ID must not be empty");
     }
 
+    const contractAddress = (params.contractAddress ?? this.config.defaultContractAddress!).toLowerCase();
+    const chainId = params.chainId ?? this.config.defaultChainId!;
+    const domain: IntentDomain = { chainId, contractAddress };
+    const caller = (params.caller ?? params.account).toLowerCase();
+    const canonicalParams = {
+      account: params.account.toLowerCase(),
+      positionId: params.positionId
+    };
+
+    let signedIntent = params.signedIntent;
+    if (!signedIntent && params.secretKey && params.nonce !== undefined) {
+      signedIntent = this.signIntent({
+        domain,
+        account: params.account,
+        caller,
+        action: "CLOSE_POSITION",
+        canonicalParams,
+        nonce: params.nonce,
+        secretKey: params.secretKey,
+        deadlineMs: params.deadlineMs
+      });
+    }
+
     return {
       action: "CLOSE_POSITION",
-      contractAddress: params.contractAddress ?? this.config.defaultContractAddress!,
-      sender: params.account,
-      positionId: params.positionId
+      contractAddress,
+      sender: caller,
+      positionId: params.positionId,
+      signedIntent
+    };
+  }
+
+  public buildSetOperatorPayload(params: {
+    account: string;
+    operator: string;
+    approved: boolean;
+    nonce?: bigint;
+    secretKey?: string;
+    contractAddress?: string;
+    chainId?: number;
+    deadlineMs?: number;
+    signedIntent?: SignedIntent;
+  }): DerivativesTransactionRequest {
+    if (!params.account || params.account.trim().length === 0) {
+      throw new Error("Account address must not be empty");
+    }
+    if (!params.operator || params.operator.trim().length === 0) {
+      throw new Error("Operator address must not be empty");
+    }
+
+    const contractAddress = (params.contractAddress ?? this.config.defaultContractAddress!).toLowerCase();
+    const chainId = params.chainId ?? this.config.defaultChainId!;
+    const domain: IntentDomain = { chainId, contractAddress };
+    const canonicalParams = {
+      account: params.account.toLowerCase(),
+      operator: params.operator.toLowerCase(),
+      approved: params.approved
+    };
+
+    let signedIntent = params.signedIntent;
+    if (!signedIntent && params.secretKey && params.nonce !== undefined) {
+      signedIntent = this.signIntent({
+        domain,
+        account: params.account,
+        caller: params.account,
+        action: "SET_OPERATOR",
+        canonicalParams,
+        nonce: params.nonce,
+        secretKey: params.secretKey,
+        deadlineMs: params.deadlineMs
+      });
+    }
+
+    return {
+      action: "SET_OPERATOR",
+      contractAddress,
+      sender: params.account.toLowerCase(),
+      operator: params.operator.toLowerCase(),
+      approved: params.approved,
+      signedIntent
     };
   }
 
@@ -88,11 +290,12 @@ export class QmoosaDerivativesClient {
       throw new Error("Position ID must not be empty");
     }
 
+    const contractAddress = (params.contractAddress ?? this.config.defaultContractAddress!).toLowerCase();
     return {
       action: "LIQUIDATE",
-      contractAddress: params.contractAddress ?? this.config.defaultContractAddress!,
-      sender: params.liquidator,
-      liquidator: params.liquidator,
+      contractAddress,
+      sender: params.liquidator.toLowerCase(),
+      liquidator: params.liquidator.toLowerCase(),
       positionId: params.positionId
     };
   }

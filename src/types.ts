@@ -2,7 +2,24 @@ export type DerivativesAction =
   | "OPEN_POSITION"
   | "CLOSE_POSITION"
   | "LIQUIDATE"
-  | "UPDATE_PRICES";
+  | "UPDATE_PRICES"
+  | "SET_OPERATOR";
+
+export interface IntentDomain {
+  chainId: number;
+  contractAddress: string;
+}
+
+export interface SignedIntent {
+  domain: IntentDomain;
+  account: string;
+  caller: string;
+  action: string;
+  nonce: bigint;
+  deadline: number;
+  paramsHash: string;
+  signature: string;
+}
 
 export interface DerivativesTransactionRequest {
   action: DerivativesAction;
@@ -17,6 +34,9 @@ export interface DerivativesTransactionRequest {
   liquidator?: string;
   markPrice?: bigint;
   indexPrice?: bigint;
+  operator?: string;
+  approved?: boolean;
+  signedIntent?: SignedIntent;
 }
 
 export interface ChainAdapter {
@@ -25,5 +45,6 @@ export interface ChainAdapter {
 
 export interface ClientConfig {
   defaultContractAddress?: string;
+  defaultChainId?: number;
   chainAdapter?: ChainAdapter;
 }
